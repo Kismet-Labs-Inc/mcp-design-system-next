@@ -1,0 +1,43 @@
+{
+  "name": "mcp-design-system-next",
+  "version": "1.0.1",
+  "description": "MCP server for Sprout Design System (design-system-next)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "mcp-design-system-next": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "design-system",
+    "sprout",
+    "vue",
+    "ai",
+    "claude",
+    "model-context-protocol"
+  ],
+  "author": "",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "design-system-next": "^2.26.14"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
