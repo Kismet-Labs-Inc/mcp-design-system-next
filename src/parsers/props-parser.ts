@@ -1,5 +1,12 @@
-import { readFileSync } from 'fs';
-import { join, basename } from 'path';
+import { basename } from 'path';
+import {
+  Project,
+  SyntaxKind,
+  type SourceFile,
+  type ObjectLiteralExpression,
+  type PropertyAssignment,
+  Node,
+} from 'ts-morph';
 
 export interface PropDefinition {
   name: string;
@@ -8,6 +15,7 @@ export interface PropDefinition {
   description?: string;
   validValues?: string[];
   required?: boolean;
+  validator?: string;
 }
 
 export interface EmitDefinition {
@@ -20,103 +28,218 @@ export interface ComponentProps {
   emits: EmitDefinition[];
 }
 
-/**
- * Parse a component's TypeScript file to extract prop definitions
- */
-export function parseComponentProps(tsFilePath: string): ComponentProps {
-  const content = readFileSync(tsFilePath, 'utf-8');
-  const props: PropDefinition[] = [];
-  const emits: EmitDefinition[] = [];
+// Shared project instance, lazily initialized
+let sharedProject: Project | null = null;
 
-  // Extract const arrays (valid values for props)
-  const constArrays: Record<string, string[]> = {};
-  const constArrayRegex = /const\s+(\w+)\s*=\s*\[([^\]]+)\]\s*as\s+const/g;
-  let constMatch;
-  while ((constMatch = constArrayRegex.exec(content)) !== null) {
-    const arrayName = constMatch[1];
-    const values = constMatch[2]
-      .split(',')
-      .map(v => v.trim().replace(/['"]/g, ''))
-      .filter(v => v);
-    constArrays[arrayName] = values;
+export function getSharedProject(): Project {
+  if (!sharedProject) {
+    sharedProject = new Project({
+      compilerOptions: {
+        allowJs: true,
+        skipLibCheck: true,
+      },
+      skipAddingFilesFromTsConfig: true,
+      skipFileDependencyResolution: true,
+    });
+  }
+  return sharedProject;
+}
+
+function resolveType(propBody: ObjectLiteralExpression): string {
+  const typeProp = propBody.getProperty('type');
+  if (!typeProp || !Node.isPropertyAssignment(typeProp)) return 'unknown';
+
+  const initializer = typeProp.getInitializer();
+  if (!initializer) return 'unknown';
+
+  const text = initializer.getText();
+
+  // Handle "Boolean as PropType<boolean>" → "boolean"
+  const castMatch = text.match(/PropType<([^>]+)>/);
+  if (castMatch) return castMatch[1];
+
+  // Handle simple types: String, Boolean, Number, Array, Object, Function
+  const simpleTypes: Record<string, string> = {
+    String: 'string',
+    Boolean: 'boolean',
+    Number: 'number',
+    Array: 'Array',
+    Object: 'Object',
+    Function: 'Function',
+  };
+
+  if (simpleTypes[text]) return simpleTypes[text];
+  return text;
+}
+
+function resolveDefault(propBody: ObjectLiteralExpression): string | undefined {
+  const defaultProp = propBody.getProperty('default');
+  if (!defaultProp || !Node.isPropertyAssignment(defaultProp)) return undefined;
+
+  const initializer = defaultProp.getInitializer();
+  if (!initializer) return undefined;
+
+  return initializer.getText();
+}
+
+function resolveValidator(propBody: ObjectLiteralExpression): string | undefined {
+  const validatorProp = propBody.getProperty('validator');
+  if (!validatorProp || !Node.isPropertyAssignment(validatorProp)) return undefined;
+
+  const initializer = validatorProp.getInitializer();
+  if (!initializer) return undefined;
+
+  return initializer.getText();
+}
+
+function resolveRequired(propBody: ObjectLiteralExpression): boolean | undefined {
+  const reqProp = propBody.getProperty('required');
+  if (!reqProp || !Node.isPropertyAssignment(reqProp)) return undefined;
+
+  const initializer = reqProp.getInitializer();
+  if (!initializer) return undefined;
+
+  return initializer.getText() === 'true' ? true : false;
+}
+
+function getJsDocDescription(node: Node): string | undefined {
+  // Walk up to get the JSDoc from the parent property assignment
+  const jsDocs = node.getLeadingCommentRanges();
+  for (const doc of jsDocs) {
+    const text = doc.getText();
+    const descMatch = text.match(/@description\s+([^\n*]+)/);
+    if (descMatch) return descMatch[1].trim().replace(/,\s*$/, '');
+  }
+  return undefined;
+}
+
+function extractConstArrays(sourceFile: SourceFile): Record<string, string[]> {
+  const result: Record<string, string[]> = {};
+
+  sourceFile.getVariableDeclarations().forEach(decl => {
+    const initializer = decl.getInitializer();
+    if (!initializer) return;
+
+    const text = initializer.getText();
+    // Match [...] as const
+    if (initializer.getKind() === SyntaxKind.AsExpression) {
+      const inner = initializer.getChildAtIndex(0);
+      if (inner && inner.getKind() === SyntaxKind.ArrayLiteralExpression) {
+        const values: string[] = [];
+        inner.forEachChild(child => {
+          if (child.getKind() === SyntaxKind.StringLiteral) {
+            values.push(child.getText().replace(/['"]/g, ''));
+          }
+        });
+        if (values.length > 0) {
+          result[decl.getName()] = values;
+        }
+      }
+    }
+  });
+
+  return result;
+}
+
+export function parseComponentProps(tsFilePath: string): ComponentProps {
+  const project = getSharedProject();
+  let sourceFile = project.getSourceFile(tsFilePath);
+  if (!sourceFile) {
+    sourceFile = project.addSourceFileAtPath(tsFilePath);
   }
 
-  // Find the propTypes export
-  const propTypesMatch = content.match(/export\s+const\s+(\w+PropTypes)\s*=\s*\{([\s\S]*?)\n\};/);
-  if (propTypesMatch) {
-    const propTypesBody = propTypesMatch[2];
+  const props: PropDefinition[] = [];
+  const emits: EmitDefinition[] = [];
+  const constArrays = extractConstArrays(sourceFile);
 
-    // Parse each prop definition
-    // Match patterns like: propName: { type: ..., default: ..., validator: ... }
-    // or simple: propName: { type: Boolean, default: false }
-    const propRegex = /(?:\/\*\*[\s\S]*?@description\s+([^\n*]+)[\s\S]*?\*\/\s*)?(\w+):\s*\{([^}]+)\}/g;
-    let propMatch;
+  // Find *PropTypes variable declaration
+  sourceFile.getVariableDeclarations().forEach(decl => {
+    const name = decl.getName();
+    if (!name.endsWith('PropTypes')) return;
 
-    while ((propMatch = propRegex.exec(propTypesBody)) !== null) {
-      const description = propMatch[1]?.trim();
-      const propName = propMatch[2];
-      const propBody = propMatch[3];
+    const initializer = decl.getInitializer();
+    if (!initializer || initializer.getKind() !== SyntaxKind.ObjectLiteralExpression) return;
 
-      const prop: PropDefinition = {
+    const obj = initializer as ObjectLiteralExpression;
+    obj.getProperties().forEach(prop => {
+      if (!Node.isPropertyAssignment(prop)) return;
+
+      const propName = prop.getName();
+      const propInit = prop.getInitializer();
+
+      if (!propInit || propInit.getKind() !== SyntaxKind.ObjectLiteralExpression) return;
+
+      const propBody = propInit as ObjectLiteralExpression;
+
+      const propDef: PropDefinition = {
         name: propName,
-        type: 'unknown',
+        type: resolveType(propBody),
       };
 
-      if (description) {
-        prop.description = description;
-      }
+      const description = getJsDocDescription(prop);
+      if (description) propDef.description = description;
 
-      // Extract type
-      const typeMatch = propBody.match(/type:\s*(String|Boolean|Number|Array|Object|Function)/);
-      if (typeMatch) {
-        prop.type = typeMatch[1].toLowerCase();
-      }
+      const defaultVal = resolveDefault(propBody);
+      if (defaultVal !== undefined) propDef.default = defaultVal;
 
-      // Check for PropType<...> pattern
-      const propTypeMatch = propBody.match(/PropType<[^>]*typeof\s+(\w+)[^>]*>/);
-      if (propTypeMatch) {
-        const arrayName = propTypeMatch[1];
-        if (constArrays[arrayName]) {
-          prop.validValues = constArrays[arrayName];
-          prop.type = 'string';
+      const required = resolveRequired(propBody);
+      if (required !== undefined) propDef.required = required;
+
+      const validator = resolveValidator(propBody);
+      if (validator) propDef.validator = validator;
+
+      // Check for valid values from const arrays via PropType<typeof X[number]>
+      const typeText = propBody.getProperty('type')
+        ? (propBody.getProperty('type') as PropertyAssignment)?.getInitializer()?.getText() ?? ''
+        : '';
+      const typeofMatch = typeText.match(/typeof\s+(\w+)/);
+      if (typeofMatch && constArrays[typeofMatch[1]]) {
+        propDef.validValues = constArrays[typeofMatch[1]];
+        if (propDef.type.includes('typeof')) {
+          propDef.type = 'string';
         }
       }
 
-      // Extract default value
-      const defaultMatch = propBody.match(/default:\s*(['"]?)([^'",\n]+)\1/);
-      if (defaultMatch) {
-        prop.default = defaultMatch[2].trim();
+      // Also check validator text for const array references
+      if (validator) {
+        const valArrayMatch = validator.match(/(\w+)\.includes/);
+        if (valArrayMatch && constArrays[valArrayMatch[1]]) {
+          propDef.validValues = constArrays[valArrayMatch[1]];
+        }
       }
 
-      // Check for required
-      const requiredMatch = propBody.match(/required:\s*(true|false)/);
-      if (requiredMatch) {
-        prop.required = requiredMatch[1] === 'true';
+      props.push(propDef);
+    });
+  });
+
+  // Find *EmitTypes variable declaration
+  sourceFile.getVariableDeclarations().forEach(decl => {
+    const name = decl.getName();
+    if (!name.endsWith('EmitTypes') && !name.endsWith('emitTypes')) return;
+
+    const initializer = decl.getInitializer();
+    if (!initializer || initializer.getKind() !== SyntaxKind.ObjectLiteralExpression) return;
+
+    const obj = initializer as ObjectLiteralExpression;
+    obj.getProperties().forEach(prop => {
+      if (!Node.isPropertyAssignment(prop)) return;
+
+      const emitName = prop.getName().replace(/['"]/g, '');
+      const emitInit = prop.getInitializer();
+
+      let payloadType: string | undefined;
+      if (emitInit) {
+        const emitText = emitInit.getText();
+        // Try to extract parameter type from (value: Type) => ...
+        const paramMatch = emitText.match(/\(\s*\w+\s*:\s*([^),]+)/);
+        if (paramMatch) {
+          payloadType = paramMatch[1].trim();
+        }
       }
 
-      props.push(prop);
-    }
-  }
-
-  // Find the emitTypes export
-  const emitTypesMatch = content.match(/export\s+const\s+(\w+EmitTypes)\s*=\s*\{([\s\S]*?)\n\};/);
-  if (emitTypesMatch) {
-    const emitTypesBody = emitTypesMatch[2];
-
-    // Parse each emit definition
-    const emitRegex = /'?(\w+(?::\w+)?)'?:\s*\(([^)]*)\)/g;
-    let emitMatch;
-
-    while ((emitMatch = emitRegex.exec(emitTypesBody)) !== null) {
-      const emitName = emitMatch[1].replace(/'/g, '');
-      const params = emitMatch[2];
-
-      emits.push({
-        name: emitName,
-        payloadType: params ? params.split(':')[1]?.trim() : undefined,
-      });
-    }
-  }
+      emits.push({ name: emitName, payloadType });
+    });
+  });
 
   return { props, emits };
 }
@@ -126,7 +249,6 @@ export function parseComponentProps(tsFilePath: string): ComponentProps {
  */
 export function getComponentNameFromPath(dirPath: string): string {
   const dirName = basename(dirPath);
-  // Convert kebab-case to PascalCase
   return dirName
     .split('-')
     .map(part => part.charAt(0).toUpperCase() + part.slice(1))

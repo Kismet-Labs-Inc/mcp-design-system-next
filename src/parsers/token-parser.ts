@@ -21,11 +21,17 @@ export interface MaxWidthToken {
   value: string;
 }
 
+export interface UtilityToken {
+  name: string;
+  properties: Record<string, string>;
+}
+
 export interface DesignTokens {
   colors: ColorToken[];
   spacing: SpacingToken[];
   borderRadius: BorderRadiusToken[];
   maxWidth: MaxWidthToken[];
+  utilities: UtilityToken[];
 }
 
 /**
@@ -173,6 +179,39 @@ export function parseMaxWidth(assetsPath: string): MaxWidthToken[] {
 }
 
 /**
+ * Parse the utilities.ts file to extract utility tokens
+ */
+export function parseUtilities(assetsPath: string): UtilityToken[] {
+  const utilitiesPath = join(assetsPath, 'scripts', 'utilities.ts');
+  if (!existsSync(utilitiesPath)) {
+    return [];
+  }
+
+  const content = readFileSync(utilitiesPath, 'utf-8');
+  const tokens: UtilityToken[] = [];
+
+  // Match each utility entry: 'name': { prop: 'value', ... }
+  const utilityRegex = /'([^']+)':\s*\{([^}]+)\}/g;
+  let match;
+
+  while ((match = utilityRegex.exec(content)) !== null) {
+    const name = match[1];
+    const body = match[2];
+    const properties: Record<string, string> = {};
+
+    const propRegex = /(\w+):\s*'([^']+)'/g;
+    let propMatch;
+    while ((propMatch = propRegex.exec(body)) !== null) {
+      properties[propMatch[1]] = propMatch[2];
+    }
+
+    tokens.push({ name, properties });
+  }
+
+  return tokens;
+}
+
+/**
  * Get all design tokens
  */
 export function getAllTokens(assetsPath: string): DesignTokens {
@@ -181,5 +220,6 @@ export function getAllTokens(assetsPath: string): DesignTokens {
     spacing: parseSpacing(assetsPath),
     borderRadius: parseBorderRadius(assetsPath),
     maxWidth: parseMaxWidth(assetsPath),
+    utilities: parseUtilities(assetsPath),
   };
 }

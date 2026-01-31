@@ -1,6 +1,6 @@
 # mcp-design-system-next
 
-An MCP (Model Context Protocol) server that provides AI assistants with access to the Sprout Design System (`design-system-next`) component library.
+An MCP (Model Context Protocol) server that provides AI assistants with deep, structured access to the Sprout Design System (`design-system-next`) component library. Uses AST parsing with `ts-morph` to extract typed props, emits, types, composable signatures, and more from the installed package source.
 
 ## Installation
 
@@ -33,10 +33,14 @@ Add to your MCP configuration file (`.mcp.json` or Claude Code settings):
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `list_components` | List all components, optionally filtered by category | `category` (optional) |
-| `get_component` | Get detailed info about a component (props, emits, usage example) | `name` (required) |
-| `search_components` | Search components by keyword | `query` (required) |
-| `get_tokens` | Get design tokens (colors, spacing, etc.) | `type` (required) |
+| `list_components` | List all components with sub-component counts, optionally filtered by category | `category` (optional) |
+| `get_component` | Get detailed info: props, emits, types, sub-components, composables, and usage example | `name` (required) |
+| `get_component_source` | Get raw `.ts`/`.vue` source files for a component and its sub-components | `name` (required) |
+| `search_components` | Search components by keyword across names, categories, sub-components, and prop names | `query` (required) |
+| `search_by_prop` | Find components that have a specific prop name or prop type | `propName` (optional), `propType` (optional) |
+| `get_tokens` | Get design tokens (colors, spacing, border-radius, utilities, etc.) | `type` (required) |
+| `list_assets` | List available image assets and empty-state illustrations | none |
+| `get_store` | Get Pinia store source code; omit name to list all stores | `name` (optional) |
 
 ### Component Categories
 
@@ -62,11 +66,22 @@ Use these with `get_tokens`:
 | `spacing` | Spacing scale |
 | `radius` | Border radius values |
 | `maxWidth` | Max-width constraints |
+| `utilities` | Utility classes (e.g., bg-overlay) |
 | `all` | All tokens combined |
 
-## Example Prompts
+## What `get_component` Returns
 
-Here are example prompts you can give an AI assistant that will utilize this MCP server:
+For each component, the server returns structured JSON including:
+
+- **props** — Name, type, default value, description, valid values, required flag, and validator text
+- **emits** — Event name and payload type
+- **types** — Exported interfaces, type aliases, and const arrays from the component's `.ts` file
+- **subComponents** — Nested and flat sub-components with their own props and emits
+- **composables** — `use-*.ts` hook signatures and returned members
+- **template** — Vue template markup
+- **usageExample** — Auto-generated Vue SFC usage snippet
+
+## Example Prompts
 
 ### Component Discovery
 
@@ -81,6 +96,19 @@ Here are example prompts you can give an AI assistant that will utilize this MCP
 - "What props does the Modal component accept?"
 - "Show me a usage example for the Select component"
 - "What events does the DatePicker emit?"
+- "Show me the raw source code for the Table component"
+
+### Sub-Components and Composables
+
+- "What sub-components does the Table have?"
+- "What does the useTable composable return?"
+- "Show me the props for table-pagination"
+
+### Prop-Based Search
+
+- "Which components have a `disabled` prop?"
+- "Find all components that accept a boolean prop"
+- "What components have a `modelValue` prop?"
 
 ### Building Features
 
@@ -95,6 +123,12 @@ Here are example prompts you can give an AI assistant that will utilize this MCP
 - "Show me the spacing scale"
 - "What border-radius values can I use?"
 - "Get all the design tokens for my Tailwind config"
+- "What utility tokens are available?"
+
+### Assets and Stores
+
+- "What empty-state illustrations are available?"
+- "Show me the snackbar store source code"
 
 ### Migration/Comparison
 
@@ -110,12 +144,18 @@ Here are example prompts you can give an AI assistant that will utilize this MCP
 
 ## How It Works
 
-The server parses the actual `design-system-next` npm package source code to provide:
+The server parses the installed `design-system-next` npm package source code using `ts-morph` (TypeScript AST) to provide:
 
-- Component props with types, defaults, and descriptions
-- Component emits (events) with payload types
-- Vue template structure
-- Auto-generated usage examples
+- **Structured prop extraction** — Handles `PropType<T>` casts, arrow function defaults, validators, JSDoc `@description` tags, and `const` array valid values
+- **Emit parsing** — Extracts event names and payload types from emit type declarations
+- **Type extraction** — Exports all interfaces, type aliases, and const assertions
+- **Sub-component discovery** — Recursively finds nested directories and flat `.vue` sub-components
+- **Composable analysis** — Parses `use-*.ts` hooks for function signatures and returned members
+- **Design token parsing** — Reads color, spacing, border-radius, max-width, and utility token files
+- **Asset listing** — Enumerates available images and empty-state illustrations
+- **Store access** — Returns Pinia store source code
+
+All parsing is done locally against the installed package with zero network dependencies.
 
 ## Development
 
@@ -137,6 +177,7 @@ npm start
 
 - `@modelcontextprotocol/sdk` - MCP SDK for building servers
 - `design-system-next` - Sprout Design System Vue component library
+- `ts-morph` - TypeScript AST analysis for structured prop/type extraction
 
 ## License
 

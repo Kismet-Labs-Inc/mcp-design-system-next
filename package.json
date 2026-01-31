@@ -1,6 +1,6 @@
 {
   "name": "mcp-design-system-next",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "MCP server for Sprout Design System (design-system-next)",
   "type": "module",
   "main": "./dist/index.js",
@@ -31,7 +31,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "design-system-next": "^2.26.14"
+    "design-system-next": "^2.26.14",
+    "ts-morph": "^23.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
