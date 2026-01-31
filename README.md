@@ -142,20 +142,115 @@ For each component, the server returns structured JSON including:
 - "Write a dashboard layout using Card, Tabs, and Table from the design system"
 - "Create a feedback form with Input, Textarea, and Button"
 
-## How It Works
+## Technical Architecture
 
-The server parses the installed `design-system-next` npm package source code using `ts-morph` (TypeScript AST) to provide:
+### How Parsing Works
 
-- **Structured prop extraction** — Handles `PropType<T>` casts, arrow function defaults, validators, JSDoc `@description` tags, and `const` array valid values
-- **Emit parsing** — Extracts event names and payload types from emit type declarations
-- **Type extraction** — Exports all interfaces, type aliases, and const assertions
-- **Sub-component discovery** — Recursively finds nested directories and flat `.vue` sub-components
-- **Composable analysis** — Parses `use-*.ts` hooks for function signatures and returned members
-- **Design token parsing** — Reads color, spacing, border-radius, max-width, and utility token files
-- **Asset listing** — Enumerates available images and empty-state illustrations
-- **Store access** — Returns Pinia store source code
+The server resolves the `design-system-next` package location at startup via Node's `createRequire` and reads source files directly from `node_modules/design-system-next/src/`. All parsing happens locally with zero network calls.
 
-All parsing is done locally against the installed package with zero network dependencies.
+#### AST-Based Prop Extraction (ts-morph)
+
+The props parser (`src/parsers/props-parser.ts`) uses [ts-morph](https://ts-morph.com/) to build a TypeScript AST from each component's `.ts` file. A shared `Project` instance is lazily initialized once and reused across all parse calls for the server's lifetime.
+
+For each `*PropTypes` export, the parser walks the object literal's property assignments and extracts:
+
+- **Type** — Resolves `PropType<T>` cast expressions (e.g., `Array as PropType<Header[]>` becomes `Header[]`), and maps Vue constructor types (`String`, `Boolean`, `Number`) to their lowercase equivalents
+- **Default** — Captures the full initializer text, including arrow functions like `() => ({ min: 1900, max: new Date().getFullYear() })` and expressions like `new Date().getFullYear().toString()`
+- **Validator** — Extracts the full validator function text
+- **Valid values** — Cross-references `const` array assertions (e.g., `const TABLE_SORT = ['asc', 'desc'] as const`) by matching `typeof X` references in `PropType<>` casts and `.includes()` calls in validators
+- **Required** — Reads the `required: true/false` property
+- **Description** — Extracts `@description` tags from leading JSDoc comments
+
+This approach is significantly more accurate than regex-based parsing. The old regex parser failed on multi-line defaults, nested objects, complex `PropType<>` expressions, and validators that referenced const arrays. The AST parser handles all of these correctly.
+
+#### Type Extraction
+
+The type parser (`src/parsers/type-parser.ts`) reuses the same ts-morph `Project` and extracts all exported type aliases, interfaces, and const assertions from a component's `.ts` file. This gives the AI assistant full visibility into types like `Header`, `TableData`, `DisabledDatesType`, etc., which are essential for generating correct code.
+
+#### Sub-Component Discovery
+
+Components in `design-system-next` follow two sub-component patterns:
+
+1. **Nested directories** — e.g., `table/table-actions/table-actions.vue` with an optional `.ts` file for props
+2. **Flat files** — e.g., `sidenav/sidenav-loader.vue` where a `.vue` file in the component root has a different name than the component itself
+3. **PascalCase files in subdirectories** — e.g., `date-picker/tabs/DatePickerCalendarTab.vue`
+
+The discovery function (`getSubComponents`) scans for all three patterns and reports whether each sub-component has a `.ts` file (and therefore parseable props).
+
+#### Composable Analysis
+
+The composable parser (`src/parsers/composable-parser.ts`) finds `use-*.ts` files in each component directory and extracts:
+
+- The exported function name (e.g., `useTable`, `useDraggableTableRows`)
+- The full parameter signature including types (e.g., `(props: TablePropTypes, emit: SetupContext<TableEmitTypes>['emit'], slots: Slots)`)
+- The list of returned members from the final `return { ... }` block
+
+This uses regex rather than ts-morph since composable return statements are structurally simple and the regex approach avoids the overhead of full AST resolution for these files.
+
+#### Token Parsing
+
+Design tokens are extracted from `src/assets/scripts/*.ts` files using regex matching against known object patterns (`colorScheme`, `spacing`, `borderRadius`, `maxWidth`, `utilities`). This is simpler than AST parsing since token files follow consistent, flat structures.
+
+### Caching Behavior
+
+ts-morph's `Project` instance caches source files in memory after the first parse. This means:
+
+- Subsequent calls to `get_component` or `search_by_prop` for the same component are fast
+- If the `design-system-next` package is updated via `npm install`, the server must be **restarted** to pick up changes
+
+### How This Compares to shadcn/ui MCP Servers
+
+The [official shadcn MCP server](https://ui.shadcn.com/docs/mcp) and community alternatives (e.g., [Jpisnice/shadcn-ui-mcp-server](https://github.com/Jpisnice/shadcn-ui-mcp-server), [magnusrodseth/shadcn-mcp-server](https://github.com/magnusrodseth/shadcn-mcp-server)) take a fundamentally different approach.
+
+#### Data Source
+
+| | shadcn MCP servers | This server |
+|---|---|---|
+| **Source** | Fetch raw source from GitHub API or registry HTTP endpoints at runtime | Read from locally installed `node_modules` on disk |
+| **Network** | Required (subject to GitHub rate limits: 60 req/hr unauthenticated, 5000 authenticated) | None — fully offline |
+| **Freshness** | Always fetches latest from upstream repo | Tied to the installed npm version; restart after `npm update` |
+
+#### Parsing Strategy
+
+| | shadcn MCP servers | This server |
+|---|---|---|
+| **Approach** | No parsing — returns raw source code and lets the LLM interpret it | AST parsing with ts-morph — returns structured JSON with typed fields |
+| **Props** | LLM must read and understand the source to identify props | Pre-extracted with name, type, default, validator, valid values, description |
+| **Types** | Embedded in the raw source; LLM must locate and interpret them | Extracted as separate structured entries with kind (type/interface/const-array) |
+| **Sub-components** | Not specifically identified | Automatically discovered and returned with their own parsed props |
+| **Composables** | Not analyzed | Signatures and returned members extracted |
+
+#### Tool Coverage
+
+| Tool | shadcn (official) | shadcn (community) | This server |
+|---|---|---|---|
+| List components | Registry browse | `list_components` | `list_components` (+ sub-component counts) |
+| Component detail | Via registry | `get_component` (raw source) | `get_component` (structured props/emits/types/composables) |
+| Raw source access | — | Yes | `get_component_source` |
+| Search by keyword | Registry search | — | `search_components` (names, categories, sub-components, prop names) |
+| Search by prop | — | — | `search_by_prop` |
+| Design tokens | — | — | `get_tokens` |
+| Assets | — | — | `list_assets` |
+| Stores | — | — | `get_store` |
+| Install components | Yes (via shadcn CLI) | — | — |
+| Blocks/templates | Yes | Some | — |
+
+### Pros
+
+- **Structured output reduces hallucination** — The AI receives typed, validated JSON rather than raw source code it must interpret. Prop types, defaults, and valid values are unambiguous.
+- **Prop-level search** — `search_by_prop` enables queries like "which components accept a disabled prop?" that no shadcn MCP server supports.
+- **Zero network dependency** — No API rate limits, no latency, works offline and in air-gapped environments.
+- **Deep component introspection** — Sub-components, composable signatures, exported types, and design tokens are all surfaced in a single `get_component` call.
+- **Fast after first parse** — ts-morph caches the AST in memory, so repeated queries are near-instant.
+
+### Cons
+
+- **Coupled to the installed version** — The server only sees what's in `node_modules`. After `npm update`, the server must be restarted. shadcn servers always fetch the latest from GitHub.
+- **No install capability** — The official shadcn server can install components via the CLI. This server is read-only.
+- **No blocks/templates** — shadcn servers serve pre-built page layouts and templates. This server focuses on individual components and their APIs.
+- **ts-morph adds weight** — The `ts-morph` dependency (which bundles the TypeScript compiler) adds ~80 MB to `node_modules`. shadcn servers that simply fetch from GitHub have no heavy dependencies.
+- **Regex fallback for some parsers** — Composable and token parsing use regex rather than AST. This works for the current design system's patterns but could break if the file structure changes significantly.
+- **Manual category mapping** — Component categories are hardcoded in `index.ts` rather than derived from the source. New components added to the design system won't have a category until the mapping is updated.
 
 ## Development
 
