@@ -73,7 +73,7 @@ function buildManifest(): Manifest {
         emits = parsed.emits;
         types = parseTypes(tsFile);
       } catch (err) {
-        console.error(`  Warning: failed to parse props for ${componentName}:`, (err as Error).message);
+        console.warn(`  Warning: failed to parse props for ${componentName}:`, (err as Error).message);
       }
     }
 
