@@ -6,25 +6,39 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
-import { join, dirname, relative, extname } from 'path';
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { join, dirname, extname } from 'path';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 
-import { parseComponentProps, getComponentNameFromPath, type PropDefinition } from './parsers/props-parser.js';
-import { parseVueFile, generateUsageExample } from './parsers/vue-parser.js';
-import { getAllTokens, parseColors, parseSpacing, parseBorderRadius, parseMaxWidth, parseUtilities } from './parsers/token-parser.js';
-import { parseComposable, type ComposableInfo } from './parsers/composable-parser.js';
-import { parseTypes, type TypeDefinition } from './parsers/type-parser.js';
+// ── Load pre-built manifest ───────────────────────────────────────────
 
-// Resolve the design-system-next package path
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Look for manifest in project root first (generated at build time), then dist/
+const manifestPaths = [
+  join(__dirname, '..', 'component-manifest.json'),
+  join(__dirname, 'component-manifest.json'),
+];
+
+let manifest: Manifest;
+const manifestPath = manifestPaths.find(p => existsSync(p));
+if (manifestPath) {
+  manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+  console.error(`Loaded manifest: ${manifest.components.length} components, design-system-next v${manifest.designSystemVersion}`);
+} else {
+  console.error('component-manifest.json not found. Run "npm run generate-manifest" first.');
+  process.exit(1);
+}
+
+// ── Resolve design-system-next for source fallback ────────────────────
+
 const require = createRequire(import.meta.url);
 let designSystemPath: string;
 
 try {
-  // Resolve the main entry point and find the package root
   const designSystemMain = require.resolve('design-system-next');
-  // The main entry is at dist/design-system-next.es.js, so go up 2 levels
   designSystemPath = join(dirname(designSystemMain), '..');
 } catch {
   console.error('Could not find design-system-next package. Make sure it is installed.');
@@ -32,8 +46,103 @@ try {
 }
 
 const componentsPath = join(designSystemPath, 'src', 'components');
-const assetsPath = join(designSystemPath, 'src', 'assets');
-const storesPath = join(designSystemPath, 'src', 'stores');
+
+// ── Manifest types ────────────────────────────────────────────────────
+
+interface PropDefinition {
+  name: string;
+  type: string;
+  default?: string;
+  description?: string;
+  validValues?: string[];
+  required?: boolean;
+  validator?: string;
+}
+
+interface EmitDefinition {
+  name: string;
+  payloadType?: string;
+}
+
+interface SlotDefinition {
+  name: string;
+  scoped: boolean;
+  scopeProps?: string[];
+}
+
+interface TypeDefinition {
+  name: string;
+  kind: 'type' | 'interface' | 'const-array';
+  definition: string;
+}
+
+interface ComposableInfo {
+  name: string;
+  fileName: string;
+  signature: string;
+  returnedMembers: string[];
+}
+
+interface SubComponentManifest {
+  name: string;
+  pascalName: string;
+  props: PropDefinition[];
+  emits: EmitDefinition[];
+  slots: SlotDefinition[];
+}
+
+interface ComponentManifest {
+  name: string;
+  pascalName: string;
+  category: string;
+  props: PropDefinition[];
+  emits: EmitDefinition[];
+  slots: SlotDefinition[];
+  types: TypeDefinition[];
+  composables: ComposableInfo[];
+  subComponents: SubComponentManifest[];
+}
+
+interface Manifest {
+  version: string;
+  generatedAt: string;
+  designSystemVersion: string;
+  components: ComponentManifest[];
+  tokens: unknown;
+  stores: Array<{ name: string; fileName: string; source: string }>;
+  assets: {
+    images: Array<{ name: string; path: string; type: string }>;
+    emptyStates: Array<{ name: string; path: string; type: string }>;
+  };
+}
+
+// ── Build in-memory indexes from manifest ─────────────────────────────
+
+const componentMap = new Map<string, ComponentManifest>();
+const componentsByCategory = new Map<string, ComponentManifest[]>();
+
+for (const comp of manifest.components) {
+  componentMap.set(comp.name, comp);
+  const catList = componentsByCategory.get(comp.category) ?? [];
+  catList.push(comp);
+  componentsByCategory.set(comp.category, catList);
+}
+
+// Pre-build search index: component name → searchable text blob
+const searchIndex = new Map<string, string>();
+for (const comp of manifest.components) {
+  const subNames = comp.subComponents.map(s => s.name).join(' ');
+  const propNames = comp.props.map(p => p.name).join(' ');
+  const slotNames = comp.slots.map(s => s.name).join(' ');
+  const propDescriptions = comp.props.map(p => p.description ?? '').join(' ');
+
+  searchIndex.set(
+    comp.name,
+    `${comp.name} ${comp.pascalName} ${comp.category} ${subNames} ${propNames} ${slotNames} ${propDescriptions}`.toLowerCase()
+  );
+}
+
+// ── Source-file reader (for get_component_source fallback) ────────────
 
 function readDirectoryRecursive(dir: string, extensions: string[]): Record<string, string> {
   const result: Record<string, string> = {};
@@ -55,69 +164,61 @@ function readDirectoryRecursive(dir: string, extensions: string[]): Record<strin
   return result;
 }
 
-interface SubComponent {
-  name: string;
-  pascalName: string;
-  hasProps: boolean;
-}
+// ── Usage example generator ───────────────────────────────────────────
 
-function toPascalCase(kebab: string): string {
-  return kebab
-    .split('-')
-    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
-    .join('');
-}
+function generateUsageExample(
+  componentName: string,
+  props: PropDefinition[],
+  slots: SlotDefinition[]
+): string {
+  const kebabName = componentName
+    .replace(/([a-z])([A-Z])/g, '$1-$2')
+    .toLowerCase();
 
-function getSubComponents(componentDir: string, componentName: string): SubComponent[] {
-  const subs: SubComponent[] = [];
-  if (!existsSync(componentDir)) return subs;
+  const propsStr = props
+    .filter(p => !p.default || p.validValues)
+    .slice(0, 3)
+    .map(p => {
+      if (p.type === 'boolean') return p.name;
+      if (p.validValues && p.validValues.length > 0) return `${p.name}="${p.validValues[0]}"`;
+      if (p.type === 'string') return `${p.name}="example"`;
+      return null;
+    })
+    .filter(Boolean)
+    .join(' ');
 
-  const entries = readdirSync(componentDir);
-  for (const entry of entries) {
-    const fullPath = join(componentDir, entry);
-    const stat = statSync(fullPath);
+  const propsSection = propsStr ? ` ${propsStr}` : '';
 
-    if (stat.isDirectory()) {
-      // Nested sub-component directory (e.g., table-actions/)
-      const subTsFile = join(fullPath, `${entry}.ts`);
-      const subVueFile = join(fullPath, `${entry}.vue`);
-      const hasTs = existsSync(subTsFile);
-      const hasVue = existsSync(subVueFile);
-
-      // Also check for PascalCase .vue files inside (e.g., tabs/DatePickerCalendarTab.vue)
-      const innerEntries = readdirSync(fullPath);
-      const innerVues = innerEntries.filter(e => extname(e) === '.vue');
-
-      if (hasTs || hasVue) {
-        subs.push({ name: entry, pascalName: toPascalCase(entry), hasProps: hasTs });
-      } else if (innerVues.length > 0) {
-        // Directory with PascalCase .vue files (no matching kebab-case file)
-        for (const vue of innerVues) {
-          const vueName = vue.replace('.vue', '');
-          subs.push({ name: vueName, pascalName: vueName, hasProps: false });
-        }
+  // Build slot content hints
+  const namedSlots = slots.filter(s => s.name !== 'default');
+  let slotContent = '    <!-- Content -->';
+  if (namedSlots.length > 0) {
+    const slotLines = namedSlots.slice(0, 3).map(s => {
+      if (s.scoped && s.scopeProps?.length) {
+        return `    <template #${s.name}="{ ${s.scopeProps.join(', ')} }">\n      <!-- ${s.name} content -->\n    </template>`;
       }
-    } else if (extname(entry) === '.vue') {
-      // Flat sub-component: .vue file whose name differs from the main component
-      const fileName = entry.replace('.vue', '');
-      if (fileName !== componentName) {
-        subs.push({
-          name: fileName,
-          pascalName: toPascalCase(fileName),
-          hasProps: existsSync(join(componentDir, `${fileName}.ts`)),
-        });
-      }
-    }
+      return `    <template #${s.name}>\n      <!-- ${s.name} content -->\n    </template>`;
+    });
+    slotContent = slotLines.join('\n');
   }
 
-  return subs;
+  return `<template>
+  <Spr${componentName}${propsSection}>
+${slotContent}
+  </Spr${componentName}>
+</template>
+
+<script setup>
+import { Spr${componentName} } from 'design-system-next';
+</script>`;
 }
 
-// Create the MCP server
+// ── Create the MCP server ─────────────────────────────────────────────
+
 const server = new Server(
   {
     name: 'mcp-design-system-next',
-    version: '2.0.0',
+    version: '3.0.0',
   },
   {
     capabilities: {
@@ -126,26 +227,27 @@ const server = new Server(
   }
 );
 
-// Tool definitions
+// ── Tool definitions ──────────────────────────────────────────────────
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
         name: 'list_components',
-        description: 'List all available components in the Sprout Design System',
+        description: 'List all available components in the Sprout Design System. Returns compact overview with names, categories, slot counts, and sub-component counts.',
         inputSchema: {
           type: 'object',
           properties: {
             category: {
               type: 'string',
-              description: 'Optional category to filter by (e.g., "form", "layout", "feedback")',
+              description: 'Optional category to filter by: "form", "layout", "data", "feedback", "navigation", "filter", "utility"',
             },
           },
         },
       },
       {
         name: 'get_component',
-        description: 'Get detailed information about a specific component including props, emits, and usage example',
+        description: 'Get structured documentation for a component: props (with types, defaults, valid values, descriptions), emits, slots (with scoped props), types, composables, and sub-components. Does NOT include raw template source — use get_component_source if you need that.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -159,13 +261,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'search_components',
-        description: 'Search for components by keyword',
+        description: 'Search for components by keyword across names, categories, prop names, slot names, and prop descriptions.',
         inputSchema: {
           type: 'object',
           properties: {
             query: {
               type: 'string',
-              description: 'Search query to match against component names',
+              description: 'Search query to match against component metadata',
             },
           },
           required: ['query'],
@@ -173,7 +275,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'search_by_prop',
-        description: 'Search for components that have a specific prop name or prop type',
+        description: 'Search for components that have a specific prop name or prop type. Also searches sub-component props.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -190,7 +292,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'get_component_source',
-        description: 'Get the raw source files (.ts, .vue) for a component, including sub-components. Returns file paths as keys and contents as values for AI to read directly.',
+        description: 'Get the raw source files (.ts, .vue) for a component, including sub-components. Use this only when the structured get_component output is insufficient.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -242,209 +344,84 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
-// Component categories for classification
-const componentCategories: Record<string, string[]> = {
-  form: ['button', 'checkbox', 'input', 'radio', 'select', 'slider', 'switch', 'textarea', 'file-upload', 'date-picker', 'time-picker'],
-  layout: ['accordion', 'card', 'collapsible', 'sidenav', 'sidepanel', 'tabs', 'modal'],
-  data: ['avatar', 'badge', 'banner', 'calendar', 'calendar-cell', 'chips', 'empty-state', 'list', 'lozenge', 'progress-bar', 'status', 'table', 'audit-trail'],
-  feedback: ['snackbar', 'tooltip', 'popper'],
-  navigation: ['dropdown', 'stepper', 'floating-action'],
-  filter: ['attribute-filter', 'filter'],
-  utility: ['icon', 'logo'],
-};
+// ── Tool handlers ─────────────────────────────────────────────────────
 
-function getComponentCategory(name: string): string {
-  for (const [category, components] of Object.entries(componentCategories)) {
-    if (components.includes(name)) {
-      return category;
-    }
-  }
-  return 'other';
-}
-
-function getAllComponents(): string[] {
-  if (!existsSync(componentsPath)) {
-    return [];
-  }
-
-  return readdirSync(componentsPath).filter(name => {
-    const fullPath = join(componentsPath, name);
-    return statSync(fullPath).isDirectory();
-  });
-}
-
-// Tool handlers
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   switch (name) {
     case 'list_components': {
       const category = (args as { category?: string })?.category?.toLowerCase();
-      let components = getAllComponents();
 
+      let components = manifest.components;
       if (category) {
-        components = components.filter(c => getComponentCategory(c) === category);
+        components = componentsByCategory.get(category) ?? [];
       }
 
-      const result = components.map(c => {
-        const subs = getSubComponents(join(componentsPath, c), c);
-        return {
-          name: c,
-          pascalName: getComponentNameFromPath(join(componentsPath, c)),
-          category: getComponentCategory(c),
-          subComponentCount: subs.length,
-          subComponents: subs.map(s => s.name),
-        };
-      });
+      const result = components.map(c => ({
+        name: c.name,
+        pascalName: c.pascalName,
+        category: c.category,
+        propCount: c.props.length,
+        slotCount: c.slots.length,
+        subComponentCount: c.subComponents.length,
+        subComponents: c.subComponents.map(s => s.name),
+      }));
 
       return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       };
     }
 
     case 'get_component': {
       const componentName = (args as { name: string }).name.toLowerCase();
-      const componentDir = join(componentsPath, componentName);
+      const comp = componentMap.get(componentName);
 
-      if (!existsSync(componentDir)) {
+      if (!comp) {
         return {
-          content: [
-            {
-              type: 'text',
-              text: `Component "${componentName}" not found. Use list_components to see available components.`,
-            },
-          ],
+          content: [{ type: 'text', text: `Component "${componentName}" not found. Use list_components to see available components.` }],
           isError: true,
         };
       }
 
-      const tsFile = join(componentDir, `${componentName}.ts`);
-      const vueFile = join(componentDir, `${componentName}.vue`);
+      const example = generateUsageExample(comp.pascalName, comp.props, comp.slots);
 
-      let props: PropDefinition[] = [];
-      let emits: { name: string; payloadType?: string }[] = [];
-
-      let types: TypeDefinition[] = [];
-      if (existsSync(tsFile)) {
-        const parsed = parseComponentProps(tsFile);
-        props = parsed.props;
-        emits = parsed.emits;
-        types = parseTypes(tsFile);
-      }
-
-      let template = '';
-      if (existsSync(vueFile)) {
-        const vue = parseVueFile(vueFile);
-        template = vue.template;
-      }
-
-      const pascalName = getComponentNameFromPath(componentDir);
-      const example = generateUsageExample(pascalName, props);
-
-      // Sub-components
-      const subs = getSubComponents(componentDir, componentName);
-      const subComponentDetails = subs.map(sub => {
-        let subProps: PropDefinition[] = [];
-        let subEmits: { name: string; payloadType?: string }[] = [];
-        if (sub.hasProps) {
-          // Try nested dir first, then flat file
-          const subTsPath = existsSync(join(componentDir, sub.name, `${sub.name}.ts`))
-            ? join(componentDir, sub.name, `${sub.name}.ts`)
-            : join(componentDir, `${sub.name}.ts`);
-          if (existsSync(subTsPath)) {
-            const parsed = parseComponentProps(subTsPath);
-            subProps = parsed.props;
-            subEmits = parsed.emits;
-          }
-        }
-        return {
-          name: sub.name,
-          pascalName: sub.pascalName,
-          props: subProps,
-          emits: subEmits,
-        };
-      });
-
-      // Composables
-      const composables: ComposableInfo[] = [];
-      if (existsSync(componentDir)) {
-        const dirEntries = readdirSync(componentDir);
-        for (const entry of dirEntries) {
-          if (entry.startsWith('use-') && entry.endsWith('.ts')) {
-            composables.push(parseComposable(join(componentDir, entry)));
-          }
-        }
-      }
-
+      // Build a slim response — no raw template, just structured data
       const result = {
-        name: componentName,
-        pascalName,
-        category: getComponentCategory(componentName),
-        props,
-        emits,
-        template,
+        name: comp.name,
+        pascalName: comp.pascalName,
+        category: comp.category,
+        props: comp.props,
+        emits: comp.emits,
+        slots: comp.slots,
+        types: comp.types,
+        composables: comp.composables,
+        subComponents: comp.subComponents,
         usageExample: example,
-        types,
-        subComponents: subComponentDetails,
-        composables,
       };
 
       return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       };
     }
 
     case 'search_components': {
       const query = (args as { query: string }).query.toLowerCase();
-      const components = getAllComponents();
 
-      const matches = components.filter(c => {
-        const pascalName = getComponentNameFromPath(join(componentsPath, c));
-        const category = getComponentCategory(c);
-        const subs = getSubComponents(join(componentsPath, c), c);
-        const subNames = subs.map(s => s.name).join(' ');
-
-        // Build search blob: name, pascalName, category, sub-component names, prop names
-        let searchBlob = `${c} ${pascalName} ${category} ${subNames}`.toLowerCase();
-
-        // Add prop names if .ts file exists
-        const tsFile = join(componentsPath, c, `${c}.ts`);
-        if (existsSync(tsFile)) {
-          try {
-            const parsed = parseComponentProps(tsFile);
-            const propNames = parsed.props.map(p => p.name).join(' ');
-            searchBlob += ` ${propNames}`;
-          } catch {
-            // Skip if parsing fails
-          }
+      const matches: Array<{ name: string; pascalName: string; category: string }> = [];
+      for (const [compName, blob] of searchIndex) {
+        if (blob.includes(query)) {
+          const comp = componentMap.get(compName)!;
+          matches.push({
+            name: comp.name,
+            pascalName: comp.pascalName,
+            category: comp.category,
+          });
         }
-
-        return searchBlob.includes(query);
-      });
-
-      const result = matches.map(c => ({
-        name: c,
-        pascalName: getComponentNameFromPath(join(componentsPath, c)),
-        category: getComponentCategory(c),
-      }));
+      }
 
       return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
+        content: [{ type: 'text', text: JSON.stringify(matches, null, 2) }],
       };
     }
 
@@ -457,58 +434,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      const components = getAllComponents();
       const matches: Array<{ component: string; pascalName: string; matchedProps: PropDefinition[] }> = [];
 
-      for (const c of components) {
-        const tsFile = join(componentsPath, c, `${c}.ts`);
-        if (!existsSync(tsFile)) continue;
+      for (const comp of manifest.components) {
+        // Check main component props
+        const matched = comp.props.filter(p => {
+          const nameMatch = propName ? p.name.toLowerCase().includes(propName.toLowerCase()) : true;
+          const typeMatch = propType ? p.type.toLowerCase().includes(propType.toLowerCase()) : true;
+          return nameMatch && typeMatch;
+        });
 
-        try {
-          const parsed = parseComponentProps(tsFile);
-          const matched = parsed.props.filter(p => {
+        if (matched.length > 0) {
+          matches.push({ component: comp.name, pascalName: comp.pascalName, matchedProps: matched });
+        }
+
+        // Check sub-component props
+        for (const sub of comp.subComponents) {
+          const subMatched = sub.props.filter(p => {
             const nameMatch = propName ? p.name.toLowerCase().includes(propName.toLowerCase()) : true;
             const typeMatch = propType ? p.type.toLowerCase().includes(propType.toLowerCase()) : true;
             return nameMatch && typeMatch;
           });
-
-          if (matched.length > 0) {
-            matches.push({
-              component: c,
-              pascalName: getComponentNameFromPath(join(componentsPath, c)),
-              matchedProps: matched,
-            });
+          if (subMatched.length > 0) {
+            matches.push({ component: `${comp.name}/${sub.name}`, pascalName: sub.pascalName, matchedProps: subMatched });
           }
-
-          // Also check sub-components
-          const subs = getSubComponents(join(componentsPath, c), c);
-          for (const sub of subs) {
-            if (!sub.hasProps) continue;
-            const subTsPath = existsSync(join(componentsPath, c, sub.name, `${sub.name}.ts`))
-              ? join(componentsPath, c, sub.name, `${sub.name}.ts`)
-              : join(componentsPath, c, `${sub.name}.ts`);
-            if (!existsSync(subTsPath)) continue;
-
-            try {
-              const subParsed = parseComponentProps(subTsPath);
-              const subMatched = subParsed.props.filter(p => {
-                const nameMatch = propName ? p.name.toLowerCase().includes(propName.toLowerCase()) : true;
-                const typeMatch = propType ? p.type.toLowerCase().includes(propType.toLowerCase()) : true;
-                return nameMatch && typeMatch;
-              });
-              if (subMatched.length > 0) {
-                matches.push({
-                  component: `${c}/${sub.name}`,
-                  pascalName: sub.pascalName,
-                  matchedProps: subMatched,
-                });
-              }
-            } catch {
-              // Skip
-            }
-          }
-        } catch {
-          // Skip components that fail to parse
         }
       }
 
@@ -536,134 +485,74 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     case 'get_tokens': {
       const tokenType = (args as { type: string }).type;
+      const tokens = manifest.tokens as Record<string, unknown>;
 
-      let result: unknown;
+      const tokenTypeMap: Record<string, string> = {
+        colors: 'colors',
+        spacing: 'spacing',
+        radius: 'borderRadius',
+        maxWidth: 'maxWidth',
+        utilities: 'utilities',
+        all: 'all',
+      };
 
-      switch (tokenType) {
-        case 'colors':
-          result = parseColors(assetsPath);
-          break;
-        case 'spacing':
-          result = parseSpacing(assetsPath);
-          break;
-        case 'radius':
-          result = parseBorderRadius(assetsPath);
-          break;
-        case 'maxWidth':
-          result = parseMaxWidth(assetsPath);
-          break;
-        case 'utilities':
-          result = parseUtilities(assetsPath);
-          break;
-        case 'all':
-          result = getAllTokens(assetsPath);
-          break;
-        default:
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Invalid token type "${tokenType}". Use one of: colors, spacing, radius, maxWidth, utilities, all`,
-              },
-            ],
-            isError: true,
-          };
+      const key = tokenTypeMap[tokenType];
+      if (!key) {
+        return {
+          content: [{ type: 'text', text: `Invalid token type "${tokenType}". Use one of: colors, spacing, radius, maxWidth, utilities, all` }],
+          isError: true,
+        };
       }
 
+      const result = key === 'all' ? tokens : tokens[key];
       return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       };
     }
 
     case 'list_assets': {
-      const imagesDir = join(assetsPath, 'images');
-      const images: { name: string; path: string; type: string }[] = [];
-      const emptyStates: { name: string; path: string; type: string }[] = [];
-
-      if (existsSync(imagesDir)) {
-        const entries = readdirSync(imagesDir);
-        for (const entry of entries) {
-          const fullPath = join(imagesDir, entry);
-          const stat = statSync(fullPath);
-          if (stat.isDirectory() && entry === 'empty-states') {
-            const esEntries = readdirSync(fullPath);
-            for (const esEntry of esEntries) {
-              const ext = extname(esEntry).slice(1);
-              emptyStates.push({ name: esEntry.replace(extname(esEntry), ''), path: `images/empty-states/${esEntry}`, type: ext });
-            }
-          } else if (stat.isFile()) {
-            const ext = extname(entry).slice(1);
-            images.push({ name: entry.replace(extname(entry), ''), path: `images/${entry}`, type: ext });
-          }
-        }
-      }
-
       return {
-        content: [{ type: 'text', text: JSON.stringify({ images, emptyStates }, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(manifest.assets, null, 2) }],
       };
     }
 
     case 'get_store': {
       const storeName = (args as { name?: string })?.name;
 
-      if (!existsSync(storesPath)) {
-        return {
-          content: [{ type: 'text', text: 'No stores directory found.' }],
-          isError: true,
-        };
-      }
-
-      const storeFiles = readdirSync(storesPath).filter(f => extname(f) === '.ts');
-
       if (storeName) {
-        const storeFile = storeFiles.find(f => f.replace('.ts', '') === storeName || f === storeName || f === `${storeName}.ts`);
-        if (!storeFile) {
+        const store = manifest.stores.find(
+          s => s.name === storeName || s.fileName === storeName || s.fileName === `${storeName}.ts`
+        );
+        if (!store) {
           return {
-            content: [{ type: 'text', text: `Store "${storeName}" not found. Available stores: ${storeFiles.map(f => f.replace('.ts', '')).join(', ')}` }],
+            content: [{ type: 'text', text: `Store "${storeName}" not found. Available stores: ${manifest.stores.map(s => s.name).join(', ')}` }],
             isError: true,
           };
         }
-        const content = readFileSync(join(storesPath, storeFile), 'utf-8');
         return {
-          content: [{ type: 'text', text: JSON.stringify({ name: storeFile.replace('.ts', ''), fileName: storeFile, source: content }, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify({ name: store.name, fileName: store.fileName, source: store.source }, null, 2) }],
         };
       }
 
-      // List all stores with source
-      const stores = storeFiles.map(f => ({
-        name: f.replace('.ts', ''),
-        fileName: f,
-        source: readFileSync(join(storesPath, f), 'utf-8'),
-      }));
-
       return {
-        content: [{ type: 'text', text: JSON.stringify(stores, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(manifest.stores, null, 2) }],
       };
     }
 
     default:
       return {
-        content: [
-          {
-            type: 'text',
-            text: `Unknown tool: ${name}`,
-          },
-        ],
+        content: [{ type: 'text', text: `Unknown tool: ${name}` }],
         isError: true,
       };
   }
 });
 
-// Start the server
+// ── Start the server ──────────────────────────────────────────────────
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Sprout Design System MCP server started');
+  console.error('Sprout Design System MCP server started (manifest-based v3.0.0)');
 }
 
 main().catch((error) => {
