@@ -105,7 +105,7 @@ function readDirectoryRecursive(dir: string, extensions: string[]): Record<strin
 // ── Usage example generator ───────────────────────────────────────────
 
 function generateUsageExample(
-  componentName: string,
+  pascalName: string,
   props: PropDefinition[],
   slots: SlotDefinition[]
 ): string {
@@ -137,13 +137,13 @@ function generateUsageExample(
   }
 
   return `<template>
-  <Spr${componentName}${propsSection}>
+  <Spr${pascalName}${propsSection}>
 ${slotContent}
-  </Spr${componentName}>
+  </Spr${pascalName}>
 </template>
 
 <script setup>
-import { Spr${componentName} } from 'design-system-next';
+import { Spr${pascalName} } from 'design-system-next';
 </script>`;
 }
 
@@ -345,12 +345,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const matches: Array<{ name: string; pascalName: string; category: string }> = [];
       for (const [compName, blob] of searchIndex) {
         if (blob.includes(query)) {
-          const comp = componentMap.get(compName)!;
-          matches.push({
-            name: comp.name,
-            pascalName: comp.pascalName,
-            category: comp.category,
-          });
+          const comp = componentMap.get(compName);
+          if (comp) {
+            matches.push({
+              name: comp.name,
+              pascalName: comp.pascalName,
+              category: comp.category,
+            });
+          }
         }
       }
 

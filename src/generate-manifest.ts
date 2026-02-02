@@ -22,6 +22,7 @@ import { parseComposable } from './parsers/composable-parser.js';
 import { parseTypes } from './parsers/type-parser.js';
 import { getAllTokens } from './parsers/token-parser.js';
 import type { PropDefinition, EmitDefinition, SlotDefinition, TypeDefinition, ComposableInfo, DesignTokens, SubComponentManifest, ComponentManifest, StoreManifest, Manifest } from './types.js';
+import { getSubComponents, getComponentCategory, resolveSubComponentPath } from './utils.js';
 
 // ── Resolve design-system-next paths ──────────────────────────────────
 
@@ -39,79 +40,6 @@ try {
 const componentsPath = join(designSystemPath, 'src', 'components');
 const assetsPath = join(designSystemPath, 'src', 'assets');
 const storesPath = join(designSystemPath, 'src', 'stores');
-
-// ── Helpers (duplicated from index.ts to keep the script standalone) ──
-
-function toPascalCase(kebab: string): string {
-  return kebab
-    .split('-')
-    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
-    .join('');
-}
-
-interface SubComponentMeta {
-  name: string;
-  pascalName: string;
-  hasProps: boolean;
-}
-
-function getSubComponents(componentDir: string, componentName: string): SubComponentMeta[] {
-  const subs: SubComponentMeta[] = [];
-  if (!existsSync(componentDir)) return subs;
-
-  const entries = readdirSync(componentDir);
-  for (const entry of entries) {
-    const fullPath = join(componentDir, entry);
-    const stat = statSync(fullPath);
-
-    if (stat.isDirectory()) {
-      const subTsFile = join(fullPath, `${entry}.ts`);
-      const subVueFile = join(fullPath, `${entry}.vue`);
-      const hasTs = existsSync(subTsFile);
-      const hasVue = existsSync(subVueFile);
-
-      const innerEntries = readdirSync(fullPath);
-      const innerVues = innerEntries.filter(e => extname(e) === '.vue');
-
-      if (hasTs || hasVue) {
-        subs.push({ name: entry, pascalName: toPascalCase(entry), hasProps: hasTs });
-      } else if (innerVues.length > 0) {
-        for (const vue of innerVues) {
-          const vueName = vue.replace('.vue', '');
-          subs.push({ name: vueName, pascalName: vueName, hasProps: false });
-        }
-      }
-    } else if (extname(entry) === '.vue') {
-      const fileName = entry.replace('.vue', '');
-      if (fileName !== componentName) {
-        subs.push({
-          name: fileName,
-          pascalName: toPascalCase(fileName),
-          hasProps: existsSync(join(componentDir, `${fileName}.ts`)),
-        });
-      }
-    }
-  }
-
-  return subs;
-}
-
-const componentCategories: Record<string, string[]> = {
-  form: ['button', 'checkbox', 'input', 'radio', 'select', 'slider', 'switch', 'textarea', 'file-upload', 'date-picker', 'time-picker'],
-  layout: ['accordion', 'card', 'collapsible', 'sidenav', 'sidepanel', 'tabs', 'modal'],
-  data: ['avatar', 'badge', 'banner', 'calendar', 'calendar-cell', 'chips', 'empty-state', 'list', 'lozenge', 'progress-bar', 'status', 'table', 'audit-trail'],
-  feedback: ['snackbar', 'tooltip', 'popper'],
-  navigation: ['dropdown', 'stepper', 'floating-action'],
-  filter: ['attribute-filter', 'filter'],
-  utility: ['icon', 'logo'],
-};
-
-function getComponentCategory(name: string): string {
-  for (const [category, components] of Object.entries(componentCategories)) {
-    if (components.includes(name)) return category;
-  }
-  return 'other';
-}
 
 // ── Build the manifest ────────────────────────────────────────────────
 
@@ -179,10 +107,7 @@ function buildManifest(): Manifest {
       let subSlots: SlotDefinition[] = [];
 
       if (sub.hasProps) {
-        const nestedTsPath = join(componentDir, sub.name, `${sub.name}.ts`);
-        const flatTsPath = join(componentDir, `${sub.name}.ts`);
-        const subTsPath = existsSync(nestedTsPath) ? nestedTsPath : (existsSync(flatTsPath) ? flatTsPath : null);
-
+        const subTsPath = resolveSubComponentPath(componentDir, sub.name, 'ts');
         if (subTsPath) {
           try {
             const parsed = parseComponentProps(subTsPath);
@@ -195,9 +120,7 @@ function buildManifest(): Manifest {
       }
 
       // Check for sub-component Vue file for slots
-      const nestedVuePath = join(componentDir, sub.name, `${sub.name}.vue`);
-      const flatVuePath = join(componentDir, `${sub.name}.vue`);
-      const subVuePath = existsSync(nestedVuePath) ? nestedVuePath : (existsSync(flatVuePath) ? flatVuePath : null);
+      const subVuePath = resolveSubComponentPath(componentDir, sub.name, 'vue');
 
       if (subVuePath) {
         try {
