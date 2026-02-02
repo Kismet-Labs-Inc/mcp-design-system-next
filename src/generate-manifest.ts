@@ -208,7 +208,7 @@ const manifest = buildManifest();
 // Write to project root so it can be committed and doesn't require build to exist
 const srcOutputPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'component-manifest.json');
 
-writeFileSync(srcOutputPath, JSON.stringify(manifest));
+writeFileSync(srcOutputPath, JSON.stringify(manifest, null, 2));
 
 const componentCount = manifest.components.length;
 const totalProps = manifest.components.reduce((sum, c) => sum + c.props.length, 0);
