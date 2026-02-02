@@ -124,17 +124,27 @@ function generateUsageExample(
   const propsSection = propsStr ? ` ${propsStr}` : '';
 
   // Build slot content hints
+  const hasDefaultSlot = slots.some(s => s.name === 'default');
   const namedSlots = slots.filter(s => s.name !== 'default');
-  let slotContent = '    <!-- Content -->';
-  if (namedSlots.length > 0) {
-    const slotLines = namedSlots.slice(0, 3).map(s => {
-      if (s.scoped && s.scopeProps?.length) {
-        return `    <template #${s.name}="{ ${s.scopeProps.join(', ')} }">\n      <!-- ${s.name} content -->\n    </template>`;
-      }
-      return `    <template #${s.name}>\n      <!-- ${s.name} content -->\n    </template>`;
-    });
-    slotContent = slotLines.join('\n');
+  const slotLines: string[] = [];
+
+  if (hasDefaultSlot) {
+    if (namedSlots.length > 0) {
+      slotLines.push('    <template #default>\n      <!-- Default slot content -->\n    </template>');
+    } else {
+      slotLines.push('    <!-- Default slot content -->');
+    }
   }
+
+  for (const s of namedSlots.slice(0, 2)) {
+    if (s.scoped && s.scopeProps?.length) {
+      slotLines.push(`    <template #${s.name}="{ ${s.scopeProps.join(', ')} }">\n      <!-- ${s.name} content -->\n    </template>`);
+    } else {
+      slotLines.push(`    <template #${s.name}>\n      <!-- ${s.name} content -->\n    </template>`);
+    }
+  }
+
+  const slotContent = slotLines.length > 0 ? slotLines.join('\n') : '    <!-- Content -->';
 
   return `<template>
   <Spr${pascalName}${propsSection}>
