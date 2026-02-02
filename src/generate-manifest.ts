@@ -216,5 +216,5 @@ const totalSlots = manifest.components.reduce((sum, c) => sum + c.slots.length, 
 const totalSubComponents = manifest.components.reduce((sum, c) => sum + c.subComponents.length, 0);
 const fileSizeKb = (Buffer.byteLength(JSON.stringify(manifest)) / 1024).toFixed(1);
 
-console.error(`Manifest generated: ${componentCount} components, ${totalProps} props, ${totalSlots} slots, ${totalSubComponents} sub-components`);
-console.error(`File size: ${fileSizeKb} KB → ${srcOutputPath}`);
+console.log(`Manifest generated: ${componentCount} components, ${totalProps} props, ${totalSlots} slots, ${totalSubComponents} sub-components`);
+console.log(`File size: ${fileSizeKb} KB → ${srcOutputPath}`);
