@@ -47,74 +47,7 @@ try {
 
 const componentsPath = join(designSystemPath, 'src', 'components');
 
-// ── Manifest types ────────────────────────────────────────────────────
-
-interface PropDefinition {
-  name: string;
-  type: string;
-  default?: string;
-  description?: string;
-  validValues?: string[];
-  required?: boolean;
-  validator?: string;
-}
-
-interface EmitDefinition {
-  name: string;
-  payloadType?: string;
-}
-
-interface SlotDefinition {
-  name: string;
-  scoped: boolean;
-  scopeProps?: string[];
-}
-
-interface TypeDefinition {
-  name: string;
-  kind: 'type' | 'interface' | 'const-array';
-  definition: string;
-}
-
-interface ComposableInfo {
-  name: string;
-  fileName: string;
-  signature: string;
-  returnedMembers: string[];
-}
-
-interface SubComponentManifest {
-  name: string;
-  pascalName: string;
-  props: PropDefinition[];
-  emits: EmitDefinition[];
-  slots: SlotDefinition[];
-}
-
-interface ComponentManifest {
-  name: string;
-  pascalName: string;
-  category: string;
-  props: PropDefinition[];
-  emits: EmitDefinition[];
-  slots: SlotDefinition[];
-  types: TypeDefinition[];
-  composables: ComposableInfo[];
-  subComponents: SubComponentManifest[];
-}
-
-interface Manifest {
-  version: string;
-  generatedAt: string;
-  designSystemVersion: string;
-  components: ComponentManifest[];
-  tokens: unknown;
-  stores: Array<{ name: string; fileName: string; source: string }>;
-  assets: {
-    images: Array<{ name: string; path: string; type: string }>;
-    emptyStates: Array<{ name: string; path: string; type: string }>;
-  };
-}
+import type { PropDefinition, EmitDefinition, SlotDefinition, TypeDefinition, ComposableInfo, SubComponentManifest, ComponentManifest, Manifest } from './types.js';
 
 // ── Build in-memory indexes from manifest ─────────────────────────────
 
@@ -485,26 +418,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     case 'get_tokens': {
       const tokenType = (args as { type: string }).type;
-      const tokens = manifest.tokens as Record<string, unknown>;
+      const tokens = manifest.tokens;
 
-      const tokenTypeMap: Record<string, string> = {
+      const tokenTypeMap: Record<string, keyof typeof tokens> = {
         colors: 'colors',
         spacing: 'spacing',
         radius: 'borderRadius',
         maxWidth: 'maxWidth',
         utilities: 'utilities',
-        all: 'all',
       };
 
-      const key = tokenTypeMap[tokenType];
-      if (!key) {
+      if (tokenType !== 'all' && !(tokenType in tokenTypeMap)) {
         return {
           content: [{ type: 'text', text: `Invalid token type "${tokenType}". Use one of: colors, spacing, radius, maxWidth, utilities, all` }],
           isError: true,
         };
       }
 
-      const result = key === 'all' ? tokens : tokens[key];
+      const result = tokenType === 'all' ? tokens : tokens[tokenTypeMap[tokenType]];
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       };

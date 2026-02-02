@@ -16,11 +16,12 @@ import { join, dirname, extname } from 'path';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 
-import { parseComponentProps, getComponentNameFromPath, type PropDefinition, type EmitDefinition } from './parsers/props-parser.js';
-import { parseSlots, type SlotDefinition } from './parsers/slot-parser.js';
-import { parseComposable, type ComposableInfo } from './parsers/composable-parser.js';
-import { parseTypes, type TypeDefinition } from './parsers/type-parser.js';
-import { getAllTokens, type DesignTokens } from './parsers/token-parser.js';
+import { parseComponentProps, getComponentNameFromPath } from './parsers/props-parser.js';
+import { parseSlots } from './parsers/slot-parser.js';
+import { parseComposable } from './parsers/composable-parser.js';
+import { parseTypes } from './parsers/type-parser.js';
+import { getAllTokens } from './parsers/token-parser.js';
+import type { PropDefinition, EmitDefinition, SlotDefinition, TypeDefinition, ComposableInfo, DesignTokens, SubComponentManifest, ComponentManifest, StoreManifest, Manifest } from './types.js';
 
 // ── Resolve design-system-next paths ──────────────────────────────────
 
@@ -110,47 +111,6 @@ function getComponentCategory(name: string): string {
     if (components.includes(name)) return category;
   }
   return 'other';
-}
-
-// ── Manifest types ────────────────────────────────────────────────────
-
-interface SubComponentManifest {
-  name: string;
-  pascalName: string;
-  props: PropDefinition[];
-  emits: EmitDefinition[];
-  slots: SlotDefinition[];
-}
-
-interface ComponentManifest {
-  name: string;
-  pascalName: string;
-  category: string;
-  props: PropDefinition[];
-  emits: EmitDefinition[];
-  slots: SlotDefinition[];
-  types: TypeDefinition[];
-  composables: ComposableInfo[];
-  subComponents: SubComponentManifest[];
-}
-
-interface StoreManifest {
-  name: string;
-  fileName: string;
-  source: string;
-}
-
-interface Manifest {
-  version: string;
-  generatedAt: string;
-  designSystemVersion: string;
-  components: ComponentManifest[];
-  tokens: DesignTokens;
-  stores: StoreManifest[];
-  assets: {
-    images: { name: string; path: string; type: string }[];
-    emptyStates: { name: string; path: string; type: string }[];
-  };
 }
 
 // ── Build the manifest ────────────────────────────────────────────────
