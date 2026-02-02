@@ -179,10 +179,11 @@ function buildManifest(): Manifest {
       let subSlots: SlotDefinition[] = [];
 
       if (sub.hasProps) {
-        const subTsPath = existsSync(join(componentDir, sub.name, `${sub.name}.ts`))
-          ? join(componentDir, sub.name, `${sub.name}.ts`)
-          : join(componentDir, `${sub.name}.ts`);
-        if (existsSync(subTsPath)) {
+        const nestedTsPath = join(componentDir, sub.name, `${sub.name}.ts`);
+        const flatTsPath = join(componentDir, `${sub.name}.ts`);
+        const subTsPath = existsSync(nestedTsPath) ? nestedTsPath : (existsSync(flatTsPath) ? flatTsPath : null);
+
+        if (subTsPath) {
           try {
             const parsed = parseComponentProps(subTsPath);
             subProps = parsed.props;
@@ -194,10 +195,11 @@ function buildManifest(): Manifest {
       }
 
       // Check for sub-component Vue file for slots
-      const subVuePath = existsSync(join(componentDir, sub.name, `${sub.name}.vue`))
-        ? join(componentDir, sub.name, `${sub.name}.vue`)
-        : join(componentDir, `${sub.name}.vue`);
-      if (existsSync(subVuePath)) {
+      const nestedVuePath = join(componentDir, sub.name, `${sub.name}.vue`);
+      const flatVuePath = join(componentDir, `${sub.name}.vue`);
+      const subVuePath = existsSync(nestedVuePath) ? nestedVuePath : (existsSync(flatVuePath) ? flatVuePath : null);
+
+      if (subVuePath) {
         try {
           subSlots = parseSlots(subVuePath);
         } catch (err) {

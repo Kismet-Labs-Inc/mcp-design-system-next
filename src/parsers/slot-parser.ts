@@ -104,9 +104,9 @@ export function parseSlots(vueFilePath: string): SlotDefinition[] {
     if (seenNames.has(name)) continue;
     seenNames.add(name);
 
-    // Extract scoped props — :propName="expr" bindings (excluding :name and :class)
+    // Extract scoped props — :propName or v-bind:propName bindings (excluding :name and :class)
     const scopeProps: string[] = [];
-    const bindRegex = /(?:^|\s):(\w+)=["'][^"']*["']/g;
+    const bindRegex = /(?:^|\s)(?::|v-bind:)(\w+)/g;
     let bindMatch;
     while ((bindMatch = bindRegex.exec(tagContent)) !== null) {
       const propName = bindMatch[1];

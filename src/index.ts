@@ -25,7 +25,12 @@ const manifestPaths = [
 let manifest: Manifest;
 const manifestPath = manifestPaths.find(p => existsSync(p));
 if (manifestPath) {
-  manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+  } catch (error) {
+    console.error(`Error parsing component-manifest.json: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
   console.error(`Loaded manifest: ${manifest.components.length} components, design-system-next v${manifest.designSystemVersion}`);
 } else {
   console.error('component-manifest.json not found. Run "npm run generate-manifest" first.');
