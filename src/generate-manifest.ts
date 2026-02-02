@@ -14,6 +14,7 @@
 import { readdirSync, readFileSync, existsSync, statSync, writeFileSync } from 'fs';
 import { join, dirname, extname } from 'path';
 import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
 
 import { parseComponentProps, getComponentNameFromPath, type PropDefinition, type EmitDefinition } from './parsers/props-parser.js';
 import { parseSlots, type SlotDefinition } from './parsers/slot-parser.js';
@@ -319,10 +320,8 @@ function buildManifest(): Manifest {
 // ── Main ──────────────────────────────────────────────────────────────
 
 const manifest = buildManifest();
-const outputPath = join(dirname(new URL(import.meta.url).pathname), '..', 'dist', 'component-manifest.json');
-
-// Also write to src/ so it can be committed and doesn't require build to exist
-const srcOutputPath = join(dirname(new URL(import.meta.url).pathname), '..', 'component-manifest.json');
+// Write to project root so it can be committed and doesn't require build to exist
+const srcOutputPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'component-manifest.json');
 
 writeFileSync(srcOutputPath, JSON.stringify(manifest));
 
