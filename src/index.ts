@@ -104,10 +104,6 @@ function generateUsageExample(
   props: PropDefinition[],
   slots: SlotDefinition[]
 ): string {
-  const kebabName = componentName
-    .replace(/([a-z])([A-Z])/g, '$1-$2')
-    .toLowerCase();
-
   const propsStr = props
     .filter(p => !p.default || p.validValues)
     .slice(0, 3)
@@ -367,27 +363,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      const filterProps = (props: PropDefinition[]): PropDefinition[] =>
+        props.filter(p => {
+          const nameOk = propName ? p.name.toLowerCase().includes(propName.toLowerCase()) : true;
+          const typeOk = propType ? p.type.toLowerCase().includes(propType.toLowerCase()) : true;
+          return nameOk && typeOk;
+        });
+
       const matches: Array<{ component: string; pascalName: string; matchedProps: PropDefinition[] }> = [];
 
       for (const comp of manifest.components) {
-        // Check main component props
-        const matched = comp.props.filter(p => {
-          const nameMatch = propName ? p.name.toLowerCase().includes(propName.toLowerCase()) : true;
-          const typeMatch = propType ? p.type.toLowerCase().includes(propType.toLowerCase()) : true;
-          return nameMatch && typeMatch;
-        });
-
+        const matched = filterProps(comp.props);
         if (matched.length > 0) {
           matches.push({ component: comp.name, pascalName: comp.pascalName, matchedProps: matched });
         }
 
-        // Check sub-component props
         for (const sub of comp.subComponents) {
-          const subMatched = sub.props.filter(p => {
-            const nameMatch = propName ? p.name.toLowerCase().includes(propName.toLowerCase()) : true;
-            const typeMatch = propType ? p.type.toLowerCase().includes(propType.toLowerCase()) : true;
-            return nameMatch && typeMatch;
-          });
+          const subMatched = filterProps(sub.props);
           if (subMatched.length > 0) {
             matches.push({ component: `${comp.name}/${sub.name}`, pascalName: sub.pascalName, matchedProps: subMatched });
           }

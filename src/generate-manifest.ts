@@ -187,8 +187,8 @@ function buildManifest(): Manifest {
             const parsed = parseComponentProps(subTsPath);
             subProps = parsed.props;
             subEmits = parsed.emits;
-          } catch {
-            // Skip
+          } catch (err) {
+            console.error(`  Warning: failed to parse props for sub-component ${sub.name} in ${componentName}:`, (err as Error).message);
           }
         }
       }
@@ -200,8 +200,8 @@ function buildManifest(): Manifest {
       if (existsSync(subVuePath)) {
         try {
           subSlots = parseSlots(subVuePath);
-        } catch {
-          // Skip
+        } catch (err) {
+          console.error(`  Warning: failed to parse slots for sub-component ${sub.name} in ${componentName}:`, (err as Error).message);
         }
       }
 

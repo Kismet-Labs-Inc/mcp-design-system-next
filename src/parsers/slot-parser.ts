@@ -10,11 +10,12 @@ export interface SlotDefinition {
  * Extract the root <template> block from a Vue SFC, handling nested <template> tags.
  */
 function extractRootTemplate(content: string): string {
-  const openIdx = content.indexOf('<template>');
-  if (openIdx === -1) return '';
+  const openMatch = content.match(/<template\b[^>]*>/);
+  if (!openMatch || typeof openMatch.index === 'undefined') return '';
+  const openIdx = openMatch.index;
 
   let depth = 1;
-  let pos = openIdx + '<template>'.length;
+  let pos = openIdx + openMatch[0].length;
   const openTag = /<template[\s>]/g;
   const closeTag = /<\/template\s*>/g;
 
@@ -33,7 +34,7 @@ function extractRootTemplate(content: string): string {
     } else {
       depth--;
       if (depth === 0) {
-        return content.substring(openIdx + '<template>'.length, nextClose.index);
+        return content.substring(openIdx + openMatch[0].length, nextClose.index);
       }
       pos = nextClose.index + nextClose[0].length;
     }
@@ -88,8 +89,8 @@ export function parseSlots(vueFilePath: string): SlotDefinition[] {
     searchPos = tagEnd + 1;
 
     // Extract slot name
-    const nameMatch = tagContent.match(/(?:^|\s)name="([^"]+)"/);
-    const dynamicNameMatch = tagContent.match(/(?:^|\s):name="([^"]+)"/);
+    const nameMatch = tagContent.match(/(?:^|\s)name=["']([^"']+)["']/);
+    const dynamicNameMatch = tagContent.match(/(?:^|\s):name=["']([^"']+)["']/);
 
     let name: string;
     if (nameMatch) {
@@ -105,7 +106,7 @@ export function parseSlots(vueFilePath: string): SlotDefinition[] {
 
     // Extract scoped props — :propName="expr" bindings (excluding :name and :class)
     const scopeProps: string[] = [];
-    const bindRegex = /(?:^|\s):(\w+)="[^"]*"/g;
+    const bindRegex = /(?:^|\s):(\w+)=["'][^"']*["']/g;
     let bindMatch;
     while ((bindMatch = bindRegex.exec(tagContent)) !== null) {
       const propName = bindMatch[1];
