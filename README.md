@@ -23,11 +23,13 @@ Add to your MCP configuration file (`.mcp.json` or Claude Code settings):
   "mcpServers": {
     "design-system-next": {
       "command": "npx",
-      "args": ["mcp-design-system-next"]
+      "args": ["mcp-design-system-next@latest"]
     }
   }
 }
 ```
+
+> **Tip:** Using `@latest` ensures you always get the most recent published version. Alternatively, pin to a specific version (e.g., `mcp-design-system-next@3.0.0`) for stability.
 
 ## Available Tools
 
