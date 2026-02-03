@@ -1,6 +1,6 @@
 {
   "name": "mcp-design-system-next",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "MCP server for Sprout Design System (design-system-next)",
   "type": "module",
   "main": "./dist/index.js",
@@ -8,12 +8,17 @@
     "mcp-design-system-next": "./dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "component-manifest.json"
   ],
   "scripts": {
+    "generate-manifest": "npx tsx src/generate-manifest.ts",
+    "prebuild": "npm run generate-manifest",
     "build": "tsc",
     "dev": "tsc --watch",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [
     "mcp",
@@ -36,7 +41,9 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
+    "tsx": "^4.21.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.1.0"
   },
   "engines": {
     "node": ">=18.0.0"

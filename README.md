@@ -23,11 +23,13 @@ Add to your MCP configuration file (`.mcp.json` or Claude Code settings):
   "mcpServers": {
     "design-system-next": {
       "command": "npx",
-      "args": ["mcp-design-system-next"]
+      "args": ["mcp-design-system-next@latest"]
     }
   }
 }
 ```
+
+> **Tip:** Using `@latest` ensures you always get the most recent published version. Alternatively, pin to a specific version (e.g., `mcp-design-system-next@3.0.0`) for stability.
 
 ## Available Tools
 
@@ -267,6 +269,20 @@ npm run dev
 # Start the server
 npm start
 ```
+
+## Testing
+
+```bash
+# Run all tests
+npm test
+
+# Run tests in watch mode during development
+npm run test:watch
+```
+
+The test suite includes:
+- **Unit tests** for utility functions (toPascalCase, generateUsageExample, etc.)
+- **Integration tests** for all 8 MCP tools via JSON-RPC over stdio
 
 ## Dependencies
 
