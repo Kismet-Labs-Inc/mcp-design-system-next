@@ -10,6 +10,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, dirname, extname } from 'path';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
+import { generateUsageExample } from './utils.js';
 
 // ── Load pre-built manifest ───────────────────────────────────────────
 
@@ -100,61 +101,6 @@ function readDirectoryRecursive(dir: string, extensions: string[]): Record<strin
     }
   }
   return result;
-}
-
-// ── Usage example generator ───────────────────────────────────────────
-
-function generateUsageExample(
-  pascalName: string,
-  props: PropDefinition[],
-  slots: SlotDefinition[]
-): string {
-  const propsStr = props
-    .filter(p => !p.default || p.validValues)
-    .slice(0, 3)
-    .map(p => {
-      if (p.type === 'boolean') return p.name;
-      if (p.validValues && p.validValues.length > 0) return `${p.name}="${p.validValues[0]}"`;
-      if (p.type === 'string') return `${p.name}="example"`;
-      return null;
-    })
-    .filter(Boolean)
-    .join(' ');
-
-  const propsSection = propsStr ? ` ${propsStr}` : '';
-
-  // Build slot content hints
-  const hasDefaultSlot = slots.some(s => s.name === 'default');
-  const namedSlots = slots.filter(s => s.name !== 'default');
-  const slotLines: string[] = [];
-
-  if (hasDefaultSlot) {
-    if (namedSlots.length > 0) {
-      slotLines.push('    <template #default>\n      <!-- Default slot content -->\n    </template>');
-    } else {
-      slotLines.push('    <!-- Default slot content -->');
-    }
-  }
-
-  for (const s of namedSlots.slice(0, 2)) {
-    if (s.scoped && s.scopeProps?.length) {
-      slotLines.push(`    <template #${s.name}="{ ${s.scopeProps.join(', ')} }">\n      <!-- ${s.name} content -->\n    </template>`);
-    } else {
-      slotLines.push(`    <template #${s.name}>\n      <!-- ${s.name} content -->\n    </template>`);
-    }
-  }
-
-  const slotContent = slotLines.length > 0 ? slotLines.join('\n') : '    <!-- Content -->';
-
-  return `<template>
-  <Spr${pascalName}${propsSection}>
-${slotContent}
-  </Spr${pascalName}>
-</template>
-
-<script setup>
-import { Spr${pascalName} } from 'design-system-next';
-</script>`;
 }
 
 // ── Create the MCP server ─────────────────────────────────────────────
