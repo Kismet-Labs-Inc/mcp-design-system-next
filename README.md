@@ -268,6 +268,20 @@ npm run dev
 npm start
 ```
 
+## Testing
+
+```bash
+# Run all tests
+npm test
+
+# Run tests in watch mode during development
+npm run test:watch
+```
+
+The test suite includes:
+- **Unit tests** for utility functions (toPascalCase, generateUsageExample, etc.)
+- **Integration tests** for all 8 MCP tools via JSON-RPC over stdio
+
 ## Dependencies
 
 - `@modelcontextprotocol/sdk` - MCP SDK for building servers
