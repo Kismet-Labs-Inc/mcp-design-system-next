@@ -146,13 +146,22 @@ For each component, the server returns structured JSON including:
 
 ## Technical Architecture
 
-### How Parsing Works
+### Overview
 
-The server resolves the `design-system-next` package location at startup via Node's `createRequire` and reads source files directly from `node_modules/design-system-next/src/`. All parsing happens locally with zero network calls.
+The server uses a **build-time manifest generation** approach for optimal runtime performance:
+
+1. **Build phase** — `npm run generate-manifest` (triggered automatically via prebuild script) parses all components, types, composables, and tokens from `design-system-next/src/` using AST analysis
+2. **Runtime phase** — The MCP server loads the pre-built `component-manifest.json` and serves queries from memory, with zero file I/O or parsing overhead
+
+This two-phase design ensures fast startup, low latency on tool calls, and zero network dependency.
+
+### Build-Time Manifest Generation
+
+The manifest generator (`src/generate-manifest.ts`) runs at build time and performs all parsing upfront using the tools in `src/parsers/`:
 
 #### AST-Based Prop Extraction (ts-morph)
 
-The props parser (`src/parsers/props-parser.ts`) uses [ts-morph](https://ts-morph.com/) to build a TypeScript AST from each component's `.ts` file. A shared `Project` instance is lazily initialized once and reused across all parse calls for the server's lifetime.
+The props parser (`src/parsers/props-parser.ts`) uses [ts-morph](https://ts-morph.com/) to build a TypeScript AST from each component's `.ts` file.
 
 For each `*PropTypes` export, the parser walks the object literal's property assignments and extracts:
 
@@ -163,15 +172,15 @@ For each `*PropTypes` export, the parser walks the object literal's property ass
 - **Required** — Reads the `required: true/false` property
 - **Description** — Extracts `@description` tags from leading JSDoc comments
 
-This approach is significantly more accurate than regex-based parsing. The old regex parser failed on multi-line defaults, nested objects, complex `PropType<>` expressions, and validators that referenced const arrays. The AST parser handles all of these correctly.
+This approach is significantly more accurate than regex-based parsing. Regex parsing fails on multi-line defaults, nested objects, complex `PropType<>` expressions, and validators that reference const arrays. The AST parser handles all of these correctly.
 
 #### Type Extraction
 
-The type parser (`src/parsers/type-parser.ts`) reuses the same ts-morph `Project` and extracts all exported type aliases, interfaces, and const assertions from a component's `.ts` file. This gives the AI assistant full visibility into types like `Header`, `TableData`, `DisabledDatesType`, etc., which are essential for generating correct code.
+The type parser (`src/parsers/type-parser.ts`) uses ts-morph to extract all exported type aliases, interfaces, and const assertions from a component's `.ts` file. This gives the AI assistant full visibility into types like `Header`, `TableData`, `DisabledDatesType`, etc., which are essential for generating correct code.
 
 #### Sub-Component Discovery
 
-Components in `design-system-next` follow two sub-component patterns:
+Components in `design-system-next` follow three sub-component patterns:
 
 1. **Nested directories** — e.g., `table/table-actions/table-actions.vue` with an optional `.ts` file for props
 2. **Flat files** — e.g., `sidenav/sidenav-loader.vue` where a `.vue` file in the component root has a different name than the component itself
@@ -193,12 +202,19 @@ This uses regex rather than ts-morph since composable return statements are stru
 
 Design tokens are extracted from `src/assets/scripts/*.ts` files using regex matching against known object patterns (`colorScheme`, `spacing`, `borderRadius`, `maxWidth`, `utilities`). This is simpler than AST parsing since token files follow consistent, flat structures.
 
-### Caching Behavior
+### Runtime Behavior
 
-ts-morph's `Project` instance caches source files in memory after the first parse. This means:
+Once built, the MCP server:
 
-- Subsequent calls to `get_component` or `search_by_prop` for the same component are fast
-- If the `design-system-next` package is updated via `npm install`, the server must be **restarted** to pick up changes
+- Loads `component-manifest.json` at startup (a single file I/O operation)
+- Serves all tool queries from in-memory data structures (maps and search indexes)
+- Responds to requests with zero re-parsing or file I/O
+
+**Updating the manifest** — If `design-system-next` is updated via `npm install`, the manifest must be regenerated:
+```bash
+npm run generate-manifest
+```
+Then restart the server to load the updated manifest.
 
 ### How This Compares to shadcn/ui MCP Servers
 
@@ -208,9 +224,9 @@ The [official shadcn MCP server](https://ui.shadcn.com/docs/mcp) and community a
 
 | | shadcn MCP servers | This server |
 |---|---|---|
-| **Source** | Fetch raw source from GitHub API or registry HTTP endpoints at runtime | Read from locally installed `node_modules` on disk |
+| **Source** | Fetch raw source from GitHub API or registry HTTP endpoints at runtime | Pre-built JSON manifest generated from locally installed `design-system-next` |
 | **Network** | Required (subject to GitHub rate limits: 60 req/hr unauthenticated, 5000 authenticated) | None — fully offline |
-| **Freshness** | Always fetches latest from upstream repo | Tied to the installed npm version; restart after `npm update` |
+| **Freshness** | Always fetches latest from upstream repo | Tied to manifest regeneration; run `npm run generate-manifest` after `npm update` |
 
 #### Parsing Strategy
 
@@ -243,16 +259,17 @@ The [official shadcn MCP server](https://ui.shadcn.com/docs/mcp) and community a
 - **Prop-level search** — `search_by_prop` enables queries like "which components accept a disabled prop?" that no shadcn MCP server supports.
 - **Zero network dependency** — No API rate limits, no latency, works offline and in air-gapped environments.
 - **Deep component introspection** — Sub-components, composable signatures, exported types, and design tokens are all surfaced in a single `get_component` call.
-- **Fast after first parse** — ts-morph caches the AST in memory, so repeated queries are near-instant.
+- **Fast runtime performance** — Parsing happens once at build time. Runtime queries are served from pre-built JSON with zero file I/O or parsing overhead. Startup is near-instant and tool calls have minimal latency.
 
 ### Cons
 
-- **Coupled to the installed version** — The server only sees what's in `node_modules`. After `npm update`, the server must be restarted. shadcn servers always fetch the latest from GitHub.
+- **Manifest must be regenerated on updates** — The server reads from a pre-built `component-manifest.json`. After updating `design-system-next` via `npm install`, you must run `npm run generate-manifest` and restart the server. shadcn servers always fetch the latest from GitHub.
+- **Build-time overhead** — The manifest generation step adds to build time (typically 1-2 seconds) due to ts-morph AST parsing. This is a one-time cost per build, not per request.
 - **No install capability** — The official shadcn server can install components via the CLI. This server is read-only.
 - **No blocks/templates** — shadcn servers serve pre-built page layouts and templates. This server focuses on individual components and their APIs.
-- **ts-morph adds weight** — The `ts-morph` dependency (which bundles the TypeScript compiler) adds ~80 MB to `node_modules`. shadcn servers that simply fetch from GitHub have no heavy dependencies.
+- **ts-morph dev dependency size** — The `ts-morph` dependency (which bundles the TypeScript compiler) adds ~80 MB to `node_modules`. This is only needed at build time; the runtime bundle is small.
 - **Regex fallback for some parsers** — Composable and token parsing use regex rather than AST. This works for the current design system's patterns but could break if the file structure changes significantly.
-- **Manual category mapping** — Component categories are hardcoded in `index.ts` rather than derived from the source. New components added to the design system won't have a category until the mapping is updated.
+- **Manual category mapping** — Component categories are hardcoded in `src/utils.ts` rather than derived from the source. New components added to the design system won't have a category until the mapping is updated.
 
 ## Development
 
